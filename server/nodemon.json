@@ -1,0 +1,20 @@
+{
+  "watch": [
+    "server.js",
+    "database.js",
+    "telegramBot.js",
+    "config.js"
+  ],
+  "ignore": [
+    "../src/**",
+    "../**/*.ts",
+    "../**/*.tsx",
+    "../**/*.css",
+    "../**/*.html",
+    "../**/*.json",
+    "../node_modules/**",
+    "node_modules/**"
+  ],
+  "ext": "js,json",
+  "delay": "400ms"
+}

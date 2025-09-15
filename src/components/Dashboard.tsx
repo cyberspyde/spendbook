@@ -3,11 +3,8 @@ import {
   BarChart3, 
   DollarSign, 
   TrendingUp, 
-  Users, 
   LogOut,
   Download,
-  CheckCircle,
-  XCircle,
   Clock,
   RefreshCw
 } from 'lucide-react';
@@ -15,6 +12,8 @@ import { ExpenseList } from './ExpenseList';
 import { DepositRequests } from './DepositRequests';
 import { Analytics } from './Analytics';
 import { ExportTools } from './ExportTools';
+import { Settings } from './Settings';
+// no-op
 
 interface DashboardProps {
   onLogout: () => void;
@@ -25,6 +24,7 @@ interface Stats {
   totalDeposits: number;
   pendingDeposits: number;
   activeUsers: number;
+  balance?: number;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
@@ -33,20 +33,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     totalExpenses: 0,
     totalDeposits: 0,
     pendingDeposits: 0,
-    activeUsers: 0
+    activeUsers: 0,
+    balance: 0
   });
+  const [history, setHistory] = useState<{expenses: any[]; deposits: any[]}>({ expenses: [], deposits: [] });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchStats();
+    fetchHistory();
     
     // Setup WebSocket connection for real-time updates
-    const ws = new WebSocket(`ws://localhost:3001`);
+    const host = window.location.hostname || 'localhost';
+    const ws = new WebSocket(`ws://${host}:3001`);
     
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === 'data_update') {
         fetchStats();
+        fetchHistory();
       }
     };
 
@@ -58,16 +63,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const fetchStats = async () => {
     try {
       const token = localStorage.getItem('admin_token');
-      
-      const [expensesRes, depositsRes, pendingRes] = await Promise.all([
+
+      const [expensesRes, depositsRes, pendingRes, balanceRes] = await Promise.all([
         fetch('/api/expenses', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/deposits', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('/api/deposits/pending', { headers: { Authorization: `Bearer ${token}` } })
+        fetch('/api/deposits/pending', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/balance', { headers: { Authorization: `Bearer ${token}` } })
       ]);
 
       const expenses = await expensesRes.json();
       const deposits = await depositsRes.json();
       const pending = await pendingRes.json();
+      const bal = await balanceRes.json();
 
       const totalExpenses = expenses.reduce((sum: number, exp: any) => sum + parseFloat(exp.amount), 0);
       const totalDeposits = deposits
@@ -80,7 +87,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         totalExpenses,
         totalDeposits,
         pendingDeposits: pending.length,
-        activeUsers: uniqueUsers
+        activeUsers: uniqueUsers,
+        balance: bal?.balance ?? (totalDeposits - totalExpenses)
       });
     } catch (error) {
       console.error('Stats fetch error:', error);
@@ -89,11 +97,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     }
   };
 
+  const fetchHistory = async () => {
+    try {
+      const token = localStorage.getItem('admin_token');
+      const res = await fetch('/api/history/recent?limit=10', { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) return;
+      const data = await res.json();
+      setHistory(data);
+    } catch (e) {
+      console.error('History fetch error:', e);
+    }
+  };
+
   const tabs = [
     { id: 'expenses', label: 'Xarajatlar', icon: DollarSign },
     { id: 'deposits', label: 'Depozit so\'rovlari', icon: TrendingUp },
     { id: 'analytics', label: 'Tahlil', icon: BarChart3 },
-    { id: 'export', label: 'Eksport', icon: Download }
+    { id: 'export', label: 'Eksport', icon: Download },
+    { id: 'history', label: 'Tarix', icon: Clock },
+    { id: 'settings', label: 'Sozlamalar', icon: RefreshCw }
   ];
 
   return (
@@ -178,13 +200,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
           <div className="bg-white rounded-lg p-6 shadow-sm border">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-gray-600 text-sm font-medium">Faol Foydalanuvchilar</p>
+                <p className="text-gray-600 text-sm font-medium">Balans</p>
                 <p className="text-2xl font-bold text-gray-900">
-                  {stats.activeUsers}
+                  {(stats.balance ?? 0).toLocaleString()} so'm
                 </p>
               </div>
               <div className="p-3 bg-blue-100 rounded-lg">
-                <Users className="h-6 w-6 text-blue-600" />
+                <DollarSign className="h-6 w-6 text-blue-600" />
               </div>
             </div>
           </div>
@@ -221,6 +243,41 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                 {activeTab === 'deposits' && <DepositRequests onUpdate={fetchStats} />}
                 {activeTab === 'analytics' && <Analytics />}
                 {activeTab === 'export' && <ExportTools />}
+                {activeTab === 'history' && (
+                  <div className="space-y-6">
+                    <div className="bg-blue-50 rounded-lg p-4 border border-blue-200 flex justify-between items-center">
+                      <span className="font-medium text-blue-900">Balans:</span>
+                      <span className="text-xl font-bold text-blue-900">{(stats.balance ?? 0).toLocaleString()} so'm</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="bg-white rounded-lg p-4 border">
+                        <h3 className="font-semibold mb-3">So'nggi xarajatlar</h3>
+                        <div className="space-y-2">
+                          {history.expenses?.length ? history.expenses.slice(0,10).map((e:any, i:number) => (
+                            <div key={i} className="flex justify-between text-sm">
+                              <span className="text-gray-700">{e.category_name}</span>
+                              <span className="font-medium">{parseFloat(e.amount).toLocaleString()} so'm</span>
+                            </div>
+                          )) : <div className="text-gray-500 text-sm">Ma'lumot yo'q</div>}
+                        </div>
+                      </div>
+                      <div className="bg-white rounded-lg p-4 border">
+                        <h3 className="font-semibold mb-3">So'nggi depozitlar</h3>
+                        <div className="space-y-2">
+                          {history.deposits?.length ? history.deposits.slice(0,10).map((d:any, i:number) => (
+                            <div key={i} className="flex justify-between text-sm">
+                              <span className="text-gray-700">{d.status}</span>
+                              <span className="font-medium">{parseFloat(d.amount).toLocaleString()} so'm</span>
+                            </div>
+                          )) : <div className="text-gray-500 text-sm">Ma'lumot yo'q</div>}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {activeTab === 'settings' && (
+                  <Settings />
+                )}
               </>
             )}
           </div>

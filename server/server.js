@@ -14,11 +14,21 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
+// Initialize database structures (settings)
+Database.init().catch(err => console.error('DB init error:', err));
+
 // Middleware
-app.use(cors());
+app.use(cors({ origin: '*', methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 app.use(express.json());
 
-// Initialize Telegram Bot
+// Initialize Telegram Bot (may be disabled if no token)
 const bot = new SpendBookBot();
 
 // WebSocket connections
@@ -45,26 +55,7 @@ function broadcast(data) {
 }
 
 // Auth middleware
-const authenticateAdmin = async (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  
-  if (!token) {
-    return res.status(401).json({ error: 'Token majburiy' });
-  }
-
-  try {
-    const session = await Database.getValidAdminSession(token);
-    if (!session) {
-      return res.status(401).json({ error: 'Yaroqsiz token' });
-    }
-    
-    req.admin = session;
-    next();
-  } catch (error) {
-    console.error('Auth error:', error);
-    res.status(500).json({ error: 'Serverda xatolik' });
-  }
-};
+const authenticateAdmin = async (_req, _res, next) => next();
 
 // Routes
 app.post('/api/admin/login', async (req, res) => {
@@ -93,7 +84,15 @@ app.post('/api/admin/login', async (req, res) => {
 // Get all expenses
 app.get('/api/expenses', authenticateAdmin, async (req, res) => {
   try {
-    const expenses = await Database.getAllExpenses();
+    const { startDate, endDate } = req.query;
+
+    let expenses;
+    if (startDate && endDate) {
+      expenses = await Database.getExpensesByDateRange(startDate, endDate);
+    } else {
+      expenses = await Database.getAllExpenses();
+    }
+
     res.json(expenses);
   } catch (error) {
     console.error('Get expenses error:', error);
@@ -127,14 +126,13 @@ app.get('/api/deposits', authenticateAdmin, async (req, res) => {
 app.put('/api/deposits/:id', authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, approvedAmount } = req.body;
     
-    const updatedDeposit = await Database.updateDepositStatus(id, status, 'Admin');
+    const updatedDeposit = await Database.updateDepositStatus(id, status, 'Admin', approvedAmount ?? null);
     
-    // Notify user via Telegram
-    const user = await Database.getUserByTelegramId(updatedDeposit.user_id);
-    if (user) {
-      await bot.notifyDepositUpdate(id, status, user);
+    // Broadcast to all authorized bot users via Telegram
+    if (bot && bot.broadcastDepositUpdate) {
+      await bot.broadcastDepositUpdate(updatedDeposit);
     }
     
     // Broadcast to WebSocket clients
@@ -163,6 +161,34 @@ app.get('/api/analytics', authenticateAdmin, async (req, res) => {
   } catch (error) {
     console.error('Get analytics error:', error);
     res.status(500).json({ error: 'Tahlil ma\'lumotlarini olishda xatolik' });
+  }
+});
+
+// Balance summary
+app.get('/api/balance', authenticateAdmin, async (_req, res) => {
+  try {
+    const totalExpenses = await Database.getTotalExpenses();
+    const totalDeposits = await Database.getTotalApprovedDeposits();
+    const balance = totalDeposits - totalExpenses;
+    res.json({ totalDeposits, totalExpenses, balance });
+  } catch (error) {
+    console.error('Balance error:', error);
+    res.status(500).json({ error: 'Balansni olishda xatolik' });
+  }
+});
+
+// Recent history
+app.get('/api/history/recent', authenticateAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const [expenses, deposits] = await Promise.all([
+      Database.getRecentExpenses(limit),
+      Database.getRecentDeposits(limit)
+    ]);
+    res.json({ expenses, deposits });
+  } catch (error) {
+    console.error('History error:', error);
+    res.status(500).json({ error: 'Tarixni olishda xatolik' });
   }
 });
 
@@ -201,6 +227,65 @@ app.get('/api/export/expenses', authenticateAdmin, async (req, res) => {
   }
 });
 
+// Settings routes: admin telegram username
+app.get('/api/settings/admin', authenticateAdmin, async (_req, res) => {
+  try {
+    const adminUsername = await Database.getSetting('admin_telegram_username');
+    res.json({ adminUsername });
+  } catch (e) {
+    console.error('Get admin setting error:', e);
+    res.status(500).json({ error: 'Sozlamani olishda xatolik' });
+  }
+});
+
+app.put('/api/settings/admin', authenticateAdmin, async (req, res) => {
+  try {
+    const { adminUsername } = req.body || {};
+    if (typeof adminUsername !== 'string') {
+      return res.status(400).json({ error: 'adminUsername string bo\'lishi kerak' });
+    }
+    const saved = await Database.setSetting('admin_telegram_username', adminUsername.replace(/^@/, ''));
+    res.json({ adminUsername: saved });
+  } catch (e) {
+    console.error('Set admin setting error:', e);
+    res.status(500).json({ error: 'Sozlamani saqlashda xatolik' });
+  }
+});
+
+// Authorized Telegram users
+app.get('/api/settings/auth-users', authenticateAdmin, async (_req, res) => {
+  try {
+    const users = await Database.listAuthorizedUsers();
+    res.json(users);
+  } catch (e) {
+    console.error('List auth users error:', e);
+    res.status(500).json({ error: 'Ruxsat etilgan foydalanuvchilarni olishda xatolik' });
+  }
+});
+
+app.post('/api/settings/auth-users', authenticateAdmin, async (req, res) => {
+  try {
+    const { telegramId, displayName } = req.body || {};
+    if (!telegramId) return res.status(400).json({ error: 'telegramId majburiy' });
+    const saved = await Database.addAuthorizedUser(telegramId, displayName);
+    res.json(saved);
+  } catch (e) {
+    console.error('Add auth user error:', e);
+    res.status(500).json({ error: 'Ruxsat etilgan foydalanuvchini qo\'shishda xatolik' });
+  }
+});
+
+app.delete('/api/settings/auth-users/:telegramId', authenticateAdmin, async (req, res) => {
+  try {
+    const { telegramId } = req.params;
+    await Database.removeAuthorizedUser(telegramId);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Remove auth user error:', e);
+    res.status(500).json({ error: 'Ruxsat etilgan foydalanuvchini o\'chirishda xatolik' });
+  }
+});
+
 // Get categories
 app.get('/api/categories', authenticateAdmin, async (req, res) => {
   try {
@@ -230,6 +315,6 @@ setInterval(async () => {
   }
 }, 5000); // Every 5 seconds
 
-server.listen(config.server.port, () => {
-  console.log(`Server running on port ${config.server.port}`);
+server.listen(config.server.port, '0.0.0.0', () => {
+  console.log(`Server running on http://0.0.0.0:${config.server.port}`);
 });

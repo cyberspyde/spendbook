@@ -24,14 +24,27 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLogin }) => {
         body: JSON.stringify({ password })
       });
 
-      const data = await response.json();
+      const contentType = response.headers.get('content-type') || '';
+      let data: any = null;
+      if (contentType.includes('application/json')) {
+        try {
+          data = await response.json();
+        } catch {
+          data = null;
+        }
+      } else {
+        // Avoid JSON parsing error when server returns HTML/text (e.g., 404 or proxy issue)
+        const text = await response.text().catch(() => '');
+        data = { error: text || 'JSON bo\'lmagan javob olindi' };
+      }
 
-      if (response.ok) {
+      if (response.ok && data?.token) {
         onLogin(data.token);
       } else {
-        setError(data.error || 'Kirishda xatolik');
+        const statusInfo = `${response.status} ${response.statusText}`.trim();
+        setError(data?.error || `Kirishda xatolik (${statusInfo})`);
       }
-    } catch (error) {
+    } catch (_err) {
       setError('Serverga ulanishda xatolik');
     } finally {
       setLoading(false);

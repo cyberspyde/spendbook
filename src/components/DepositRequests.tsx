@@ -56,13 +56,27 @@ export const DepositRequests: React.FC<DepositRequestsProps> = ({ onUpdate }) =>
     setProcessingId(id);
     try {
       const token = localStorage.getItem('admin_token');
+      let approvedAmount: number | undefined = undefined;
+      if (status === 'approved') {
+        const current = deposits.find(d => d.id === id) || pendingDeposits.find(d => d.id === id);
+        const defaultVal = current ? String(parseFloat(current.amount)) : '';
+        const input = window.prompt("Tasdiqlanadigan miqdorni kiriting (so'm)", defaultVal);
+        if (input === null) {
+          setProcessingId(null);
+          return; // canceled
+        }
+        const parsed = parseFloat(input.replace(/[^0-9.]/g, ''));
+        if (!isNaN(parsed) && parsed > 0) {
+          approvedAmount = parsed;
+        }
+      }
       const response = await fetch(`/api/deposits/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ status })
+        body: JSON.stringify({ status, approvedAmount })
       });
 
       if (response.ok) {

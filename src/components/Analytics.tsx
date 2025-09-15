@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
+import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { TrendingUp, PieChart as PieChartIcon, BarChart3 } from 'lucide-react';
 
 interface CategoryData {
@@ -62,6 +62,22 @@ export const Analytics: React.FC = () => {
 
   const totalExpenses = categoryData.reduce((sum, item) => sum + parseFloat(item.total), 0);
 
+  const RADIAN = Math.PI / 180;
+  const renderPieLabel = ({ cx, cy, midAngle, outerRadius, percent, name }: any) => {
+    const radius = outerRadius + 24; // place labels a bit outside the pie
+    const rawX = cx + radius * Math.cos(-midAngle * RADIAN);
+    const y = cy + radius * Math.sin(-midAngle * RADIAN);
+    const anchor = rawX > cx ? 'start' : 'end';
+    // Clamp left so text never goes off-screen
+    const x = Math.max(rawX, 12);
+    const text = `${name}: ${(percent * 100).toFixed(1)}%`;
+    return (
+      <text x={x} y={y} fill="#10b981" textAnchor={anchor} dominantBaseline="central" style={{ fontSize: 12 }}>
+        {text}
+      </text>
+    );
+  };
+
   return (
     <div className="space-y-8">
       {/* Summary Cards */}
@@ -106,7 +122,7 @@ export const Analytics: React.FC = () => {
           {chartCategoryData.length > 0 ? (
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
+                <PieChart margin={{ top: 8, right: 16, bottom: 8, left: 16 }}>
                   <Pie
                     data={chartCategoryData}
                     cx="50%"
@@ -114,7 +130,8 @@ export const Analytics: React.FC = () => {
                     innerRadius={60}
                     outerRadius={120}
                     dataKey="value"
-                    label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(1)}%`}
+                    labelLine
+                    label={renderPieLabel}
                   >
                     {chartCategoryData.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={entry.color} />

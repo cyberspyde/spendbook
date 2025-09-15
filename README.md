@@ -102,7 +102,7 @@ npm run dev
 5. Bugungi xarajatlar uchun `/today`
 
 ### Administrator Paneli
-1. Brauzeringizda `http://localhost:3000` ga o'ting
+1. Brauzeringizda `http://localhost:3012` ga o'ting
 2. `.env` faylidagi parolni kiriting
 3. Dashboard orqali xarajatlar va depozitlarni boshqaring
 

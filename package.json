@@ -4,12 +4,12 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port 3000",
+  "dev": "vite --port 3012 --host 0.0.0.0",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "server": "cd server && node server.js",
-    "server:dev": "cd server && nodemon server.js"
+  "server": "npm --prefix server run start",
+  "server:dev": "npm --prefix server run dev"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

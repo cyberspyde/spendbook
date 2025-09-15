@@ -1,3 +1,83 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Print styles for A4 receipt list */
+@media print {
+	/* Set page to A4 and reasonable margins */
+	@page {
+		size: A4 portrait;
+		margin: 12mm;
+	}
+
+	/* Hide everything by default */
+	body * {
+		visibility: hidden;
+	}
+
+	/* Only show print area */
+	.print-a4-receipt, .print-a4-receipt * {
+		visibility: visible;
+	}
+
+	/* Remove app background and spacing for print */
+	body {
+		background: white !important;
+	}
+
+	/* Position the print area to the top-left for print */
+	.print-a4-receipt {
+		position: absolute;
+		left: 0;
+		top: 0;
+		width: 100%;
+		padding: 0;
+	}
+
+	/* Typography tweaks for readability */
+	.print-a4-receipt h1,
+	.print-a4-receipt h2,
+	.print-a4-receipt h3 {
+		margin: 0 0 8px 0;
+		color: #000 !important;
+	}
+
+	.print-a4-receipt table {
+		width: 100%;
+		border-collapse: collapse;
+	}
+
+	.print-a4-receipt th,
+	.print-a4-receipt td {
+			border-bottom: 1px dotted #999;
+		padding: 6px 8px;
+		font-size: 12px;
+	}
+
+		/* Stronger separators for header and totals */
+		.print-a4-receipt thead th {
+			border-bottom: 2px dashed #000;
+		}
+		.print-a4-receipt tfoot td {
+			border-top: 2px dashed #000;
+		}
+
+		/* Repeat table header/footer on each printed page */
+		.print-a4-receipt thead { display: table-header-group; }
+		.print-a4-receipt tfoot { display: table-footer-group; }
+
+		/* Avoid breaking rows across pages */
+		.print-a4-receipt tr { page-break-inside: avoid; break-inside: avoid; }
+		.print-a4-receipt img { page-break-inside: avoid; break-inside: avoid; }
+
+			/* Amounts: right-aligned, fixed-width digits */
+			.print-a4-receipt .amount-cell {
+				text-align: right;
+				font-variant-numeric: tabular-nums;
+				white-space: pre; /* preserve padding spaces */
+			}
+
+	.no-print {
+		display: none !important;
+	}
+}

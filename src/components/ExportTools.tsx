@@ -1,11 +1,33 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Download, FileSpreadsheet, Printer, Calendar } from 'lucide-react';
 import { format } from 'date-fns';
+
+interface PrintExpense {
+  id: number;
+  amount: string | number;
+  description?: string | null;
+  date: string;
+  first_name: string;
+  last_name: string;
+  category_name: string;
+}
 
 export const ExportTools: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [printExpenses, setPrintExpenses] = useState<PrintExpense[]>([]);
+  const printedRef = useRef(false);
+
+  // Reset printing flag after print dialog closes
+  useEffect(() => {
+    const onAfterPrint = () => {
+      setPrintExpenses([]);
+      printedRef.current = false;
+    };
+    window.addEventListener('afterprint', onAfterPrint);
+    return () => window.removeEventListener('afterprint', onAfterPrint);
+  }, []);
 
   const handleExportExpenses = async () => {
     setLoading(true);
@@ -38,13 +60,104 @@ export const ExportTools: React.FC = () => {
     }
   };
 
-  const handlePrintChecks = () => {
-    // This would typically open a new window with printable check format
-    window.print();
+  const handlePrintChecks = async () => {
+    try {
+      const token = localStorage.getItem('admin_token');
+      const params = new URLSearchParams();
+      if (startDate) params.append('startDate', startDate);
+      if (endDate) params.append('endDate', endDate);
+
+      const res = await fetch(`/api/expenses?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Xarajatlarni olishda xatolik');
+  const data: PrintExpense[] = await res.json();
+      setPrintExpenses(data);
+
+      // Wait a tick for DOM to render the print area, then print
+      setTimeout(() => {
+        if (!printedRef.current) {
+          printedRef.current = true;
+          window.print();
+        }
+      }, 50);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   return (
     <div className="space-y-8">
+      {/* A4 Print Container: hidden on screen, visible on print */}
+      <div className="print-a4-receipt hidden print:block">
+        <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
+          <div style={{ textAlign: 'center', marginBottom: 8 }}>
+            <h2 style={{ fontSize: 16, fontWeight: 700 }}>SpendBook — Cheklar Ro'yxati</h2>
+            <div style={{ fontSize: 12 }}>
+              {startDate && endDate ? (
+                <span>Oraliq: {startDate} — {endDate}</span>
+              ) : (
+                <span>Hamma xarajatlar</span>
+              )}
+              <span> | Chop etildi: {format(new Date(), 'dd/MM/yyyy HH:mm')}</span>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', width: '5%' }}>#</th>
+                <th style={{ textAlign: 'left', width: '15%' }}>Sana</th>
+                <th style={{ textAlign: 'left', width: '20%' }}>Kategoriya</th>
+                <th style={{ width: '18%' }}>Miqdor</th>
+                <th style={{ textAlign: 'left', width: '20%' }}>Foydalanuvchi</th>
+                <th style={{ textAlign: 'left' }}>Izoh</th>
+              </tr>
+            </thead>
+            <tbody>
+              {printExpenses.map((exp, idx: number) => (
+                <tr key={exp.id ?? idx}>
+                  <td>{idx + 1}</td>
+                  <td>{format(new Date(exp.date), 'dd/MM/yyyy')}</td>
+                  <td>{exp.category_name}</td>
+                  <td className="amount-cell">
+                    {(() => {
+                      const amt = parseFloat(String(exp.amount));
+                      // Format with thousand separators
+                      const formatted = isNaN(amt) ? '0' : amt.toLocaleString();
+                      const txt = `${formatted} so'm`;
+                      // Pad left to fixed width for better vertical alignment (approx 16 chars)
+                      const target = 16;
+                      return txt.length < target ? ' '.repeat(target - txt.length) + txt : txt;
+                    })()}
+                  </td>
+                  <td>{exp.first_name} {exp.last_name}</td>
+                  <td>{exp.description || ''}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan={3} style={{ fontWeight: 700, textAlign: 'right' }}>Jami:</td>
+                <td className="amount-cell" style={{ fontWeight: 700 }}>
+                  {(() => {
+                    const total = printExpenses.reduce((sum: number, e: PrintExpense) => sum + parseFloat(String(e.amount || 0)), 0);
+                    const formatted = total.toLocaleString();
+                    const txt = `${formatted} so'm`;
+                    const target = 16;
+                    return txt.length < target ? ' '.repeat(target - txt.length) + txt : txt;
+                  })()}
+                </td>
+                <td colSpan={2}></td>
+              </tr>
+            </tfoot>
+          </table>
+
+          <div style={{ marginTop: 8, fontSize: 11, textAlign: 'center' }}>
+            "Terminal chek" uslubida ixcham ro'yxat — A4 formatida
+          </div>
+        </div>
+      </div>
       <div className="bg-white rounded-lg p-6 border shadow-sm">
         <h3 className="text-lg font-semibold text-gray-900 mb-6 flex items-center space-x-2">
           <Download className="h-5 w-5" />

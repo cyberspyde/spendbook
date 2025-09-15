@@ -3,16 +3,51 @@ const config = require('./config');
 
 const pool = new Pool(config.database);
 
-// Test database connection
-pool.on('connect', () => {
-  console.log('PostgreSQL database connected');
-});
+// Log once on first successful query to reduce noise in dev
+let _dbLoggedOnce = false;
+async function _logOnce() {
+  if (_dbLoggedOnce) return;
+  try {
+    await pool.query('SELECT 1');
+    if (!_dbLoggedOnce) {
+      console.log('PostgreSQL database connected');
+      _dbLoggedOnce = true;
+    }
+  } catch (e) {
+    console.error('Database connection check failed:', e.message);
+  }
+}
+_logOnce();
 
 pool.on('error', (err) => {
   console.error('Database error:', err);
 });
 
 class Database {
+  static async init() {
+    const createSettings = `
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
+    `;
+    const createAuthUsers = `
+      CREATE TABLE IF NOT EXISTS authorized_users (
+        telegram_id TEXT PRIMARY KEY,
+        display_name TEXT
+      );
+    `;
+    await pool.query(createSettings);
+    await pool.query(createAuthUsers);
+    // Background keep-alive ping to avoid idle disconnects in some environments (dev only)
+    const intervalMs = parseInt(process.env.DB_PING_INTERVAL_MS || '60000'); // 1 min
+    if (!this._pingTimer && intervalMs > 0) {
+      this._pingTimer = setInterval(() => {
+        pool.query('SELECT 1').catch(() => {});
+      }, intervalMs);
+      this._pingTimer.unref?.();
+    }
+  }
   // Users
   static async createUser(telegramId, username, firstName, lastName) {
     const query = `
@@ -28,9 +63,58 @@ class Database {
     return result.rows[0];
   }
 
+  // Settings
+  static async getSetting(key) {
+    const res = await pool.query('SELECT value FROM settings WHERE key = $1', [key]);
+    return res.rows[0]?.value || null;
+  }
+
+  // Authorized Users (Whitelist)
+  static async listAuthorizedUsers() {
+    const res = await pool.query('SELECT telegram_id, display_name FROM authorized_users ORDER BY display_name NULLS LAST, telegram_id');
+    return res.rows;
+  }
+
+  static async addAuthorizedUser(telegramId, displayName) {
+    const q = `
+      INSERT INTO authorized_users(telegram_id, display_name)
+      VALUES ($1, $2)
+      ON CONFLICT (telegram_id) DO UPDATE SET display_name = EXCLUDED.display_name
+      RETURNING telegram_id, display_name
+    `;
+    const res = await pool.query(q, [String(telegramId), displayName || null]);
+    return res.rows[0];
+  }
+
+  static async removeAuthorizedUser(telegramId) {
+    await pool.query('DELETE FROM authorized_users WHERE telegram_id = $1', [String(telegramId)]);
+    return true;
+  }
+
+  static async isAuthorizedTelegramId(telegramId) {
+    const res = await pool.query('SELECT 1 FROM authorized_users WHERE telegram_id = $1', [String(telegramId)]);
+    return res.rowCount > 0;
+  }
+
+  static async setSetting(key, value) {
+    const upsert = `
+      INSERT INTO settings(key, value) VALUES ($1, $2)
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+      RETURNING value
+    `;
+    const res = await pool.query(upsert, [key, value]);
+    return res.rows[0]?.value || null;
+  }
+
   static async getUserByTelegramId(telegramId) {
     const query = 'SELECT * FROM users WHERE telegram_id = $1';
     const result = await pool.query(query, [telegramId]);
+    return result.rows[0];
+  }
+
+  static async getUserById(userId) {
+    const query = 'SELECT * FROM users WHERE id = $1';
+    const result = await pool.query(query, [userId]);
     return result.rows[0];
   }
 
@@ -82,6 +166,32 @@ class Database {
     return result.rows;
   }
 
+  static async getRecentExpenses(limit = 10) {
+    const query = `
+      SELECT e.*, u.first_name, u.last_name, u.username, c.name_uz as category_name, c.color as category_color
+      FROM expenses e
+      JOIN users u ON e.user_id = u.id
+      JOIN categories c ON e.category_id = c.id
+      ORDER BY e.created_at DESC
+      LIMIT $1
+    `;
+    const result = await pool.query(query, [limit]);
+    return result.rows;
+  }
+
+  static async getRecentExpensesByUser(userId, limit = 10) {
+    const query = `
+      SELECT e.*, c.name_uz as category_name, c.color as category_color
+      FROM expenses e
+      JOIN categories c ON e.category_id = c.id
+      WHERE e.user_id = $1
+      ORDER BY e.created_at DESC
+      LIMIT $2
+    `;
+    const result = await pool.query(query, [userId, limit]);
+    return result.rows;
+  }
+
   static async getExpensesByDateRange(startDate, endDate) {
     const query = `
       SELECT e.*, u.first_name, u.last_name, u.username, c.name_uz as category_name, c.color as category_color
@@ -118,14 +228,24 @@ class Database {
     return result.rows;
   }
 
-  static async updateDepositStatus(id, status, processedBy) {
+  static async updateDepositStatus(id, status, processedBy, approvedAmount = null) {
+    const fields = ['status = $1', 'processed_at = CURRENT_TIMESTAMP', 'processed_by = $2'];
+    const params = [status, processedBy, id];
+    let setClause = fields.join(', ');
+    if (approvedAmount !== null && !isNaN(parseFloat(approvedAmount))) {
+      setClause += ', amount = $4';
+      params.splice(2, 0, id); // ensure id stays as the last parameter index increases accordingly
+      // Rebuild params in correct order: status, processedBy, approvedAmount, id
+      params.length = 0;
+      params.push(status, processedBy, approvedAmount, id);
+    }
     const query = `
       UPDATE deposits 
-      SET status = $1, processed_at = CURRENT_TIMESTAMP, processed_by = $2
-      WHERE id = $3
+      SET ${setClause}
+      WHERE id = $${params.length}
       RETURNING *
     `;
-    const result = await pool.query(query, [status, processedBy, id]);
+    const result = await pool.query(query, params);
     return result.rows[0];
   }
 
@@ -138,6 +258,41 @@ class Database {
     `;
     const result = await pool.query(query);
     return result.rows;
+  }
+
+  static async getRecentDeposits(limit = 10) {
+    const query = `
+      SELECT d.*, u.first_name, u.last_name, u.username
+      FROM deposits d
+      JOIN users u ON d.user_id = u.id
+      ORDER BY d.requested_at DESC
+      LIMIT $1
+    `;
+    const result = await pool.query(query, [limit]);
+    return result.rows;
+  }
+
+  static async getDepositsByUser(userId, limit = 10) {
+    const query = `
+      SELECT * FROM deposits
+      WHERE user_id = $1
+      ORDER BY requested_at DESC
+      LIMIT $2
+    `;
+    const result = await pool.query(query, [userId, limit]);
+    return result.rows;
+  }
+
+  static async getTotalExpenses() {
+    const query = `SELECT COALESCE(SUM(amount), 0) AS total FROM expenses`;
+    const result = await pool.query(query);
+    return parseFloat(result.rows[0].total) || 0;
+  }
+
+  static async getTotalApprovedDeposits() {
+    const query = `SELECT COALESCE(SUM(amount), 0) AS total FROM deposits WHERE status = 'approved'`;
+    const result = await pool.query(query);
+    return parseFloat(result.rows[0].total) || 0;
   }
 
   // Analytics
