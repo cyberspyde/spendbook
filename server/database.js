@@ -229,22 +229,39 @@ class Database {
   }
 
   static async updateDepositStatus(id, status, processedBy, approvedAmount = null) {
-    const fields = ['status = $1', 'processed_at = CURRENT_TIMESTAMP', 'processed_by = $2'];
-    const params = [status, processedBy, id];
-    let setClause = fields.join(', ');
-    if (approvedAmount !== null && !isNaN(parseFloat(approvedAmount))) {
-      setClause += ', amount = $4';
-      params.splice(2, 0, id); // ensure id stays as the last parameter index increases accordingly
-      // Rebuild params in correct order: status, processedBy, approvedAmount, id
-      params.length = 0;
-      params.push(status, processedBy, approvedAmount, id);
+    // Coerce values to correct types to help Postgres type inference
+    const idInt = Number(id);
+    const hasApprovedAmount = approvedAmount !== null && approvedAmount !== undefined && `${approvedAmount}`.trim() !== '' && !Number.isNaN(Number(approvedAmount));
+    const amountNum = hasApprovedAmount ? Number(approvedAmount) : undefined;
+
+    let query;
+    let params;
+
+    if (hasApprovedAmount) {
+      // With approved amount
+      query = `
+        UPDATE deposits
+        SET status = $1,
+            processed_at = CURRENT_TIMESTAMP,
+            processed_by = $2,
+            amount = $3
+        WHERE id = $4
+        RETURNING *
+      `;
+      params = [status, processedBy, amountNum, idInt];
+    } else {
+      // Without amount change
+      query = `
+        UPDATE deposits
+        SET status = $1,
+            processed_at = CURRENT_TIMESTAMP,
+            processed_by = $2
+        WHERE id = $3
+        RETURNING *
+      `;
+      params = [status, processedBy, idInt];
     }
-    const query = `
-      UPDATE deposits 
-      SET ${setClause}
-      WHERE id = $${params.length}
-      RETURNING *
-    `;
+
     const result = await pool.query(query, params);
     return result.rows[0];
   }
