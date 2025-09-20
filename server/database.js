@@ -37,8 +37,10 @@ class Database {
         display_name TEXT
       );
     `;
-    await pool.query(createSettings);
-    await pool.query(createAuthUsers);
+  await pool.query(createSettings);
+  await pool.query(createAuthUsers);
+  // Ensure optional columns exist
+  await pool.query("ALTER TABLE IF EXISTS expenses ADD COLUMN IF NOT EXISTS image_path TEXT");
     // Background keep-alive ping to avoid idle disconnects in some environments (dev only)
     const intervalMs = parseInt(process.env.DB_PING_INTERVAL_MS || '60000'); // 1 min
     if (!this._pingTimer && intervalMs > 0) {
@@ -132,13 +134,27 @@ class Database {
   }
 
   // Expenses
-  static async createExpense(userId, categoryId, amount, description, date) {
-    const query = `
-      INSERT INTO expenses (user_id, category_id, amount, description, date)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id
-    `;
-    const result = await pool.query(query, [userId, categoryId, amount, description, date || new Date()]);
+  static async createExpense(userId, categoryId, amount, description, date, imagePath = null) {
+    // Flexible insert to optionally include image_path
+    const hasImage = !!imagePath;
+    let query;
+    let params;
+    if (hasImage) {
+      query = `
+        INSERT INTO expenses (user_id, category_id, amount, description, date, image_path)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
+      `;
+      params = [userId, categoryId, amount, description, date || new Date(), imagePath];
+    } else {
+      query = `
+        INSERT INTO expenses (user_id, category_id, amount, description, date)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
+      `;
+      params = [userId, categoryId, amount, description, date || new Date()];
+    }
+    const result = await pool.query(query, params);
     return result.rows[0];
   }
 
@@ -203,6 +219,22 @@ class Database {
     `;
     const result = await pool.query(query, [startDate, endDate]);
     return result.rows;
+  }
+  
+  static async getExpenseById(id) {
+    const q = `SELECT * FROM expenses WHERE id = $1`;
+    const res = await pool.query(q, [Number(id)]);
+    return res.rows[0] || null;
+  }
+  
+  static async clearExpenseImage(id) {
+    await pool.query(`UPDATE expenses SET image_path = NULL WHERE id = $1`, [Number(id)]);
+    return true;
+  }
+  
+  static async listExpensesWithImages() {
+    const res = await pool.query(`SELECT id, image_path FROM expenses WHERE image_path IS NOT NULL`);
+    return res.rows;
   }
 
   // Deposits

@@ -1,4 +1,6 @@
 const express = require('express');
+const path = require('path');
+const fs = require('fs');
 const cors = require('cors');
 const { createServer } = require('http');
 const { WebSocketServer } = require('ws');
@@ -27,6 +29,13 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json());
+
+// Static uploads directory
+const uploadsDir = path.join(__dirname, '..', 'uploads');
+try {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+} catch (_) {}
+app.use('/uploads', express.static(uploadsDir));
 
 // Initialize Telegram Bot (may be disabled if no token)
 const bot = new SpendBookBot();
@@ -211,6 +220,7 @@ app.get('/api/export/expenses', authenticateAdmin, async (req, res) => {
       'Kategoriya': expense.category_name,
       'Miqdor': expense.amount,
       'Izoh': expense.description || '',
+      'Rasm': expense.image_path || '',
       'Yaratilgan': expense.created_at
     })));
     
@@ -318,3 +328,38 @@ setInterval(async () => {
 server.listen(config.server.port, '0.0.0.0', () => {
   console.log(`Server running on http://0.0.0.0:${config.server.port}`);
 });
+
+// --- Image cleanup job: delete images older than N days and clear DB references ---
+const IMAGE_RETENTION_DAYS = parseInt(process.env.IMAGE_RETENTION_DAYS || '40');
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+async function cleanupOldImages() {
+  try {
+    const now = Date.now();
+    const cutoff = now - IMAGE_RETENTION_DAYS * ONE_DAY_MS;
+    const items = await Database.listExpensesWithImages();
+    for (const it of items) {
+      try {
+        // Normalize and resolve absolute path
+        const rel = String(it.image_path || '').replace(/^\/*/, '');
+        const abs = path.isAbsolute(rel) ? rel : path.join(uploadsDir, path.basename(rel));
+        const stat = fs.existsSync(abs) ? fs.statSync(abs) : null;
+        if (!stat || stat.mtimeMs < cutoff) {
+          // Remove file if exists
+          if (stat) {
+            try { fs.unlinkSync(abs); } catch (_) {}
+          }
+          await Database.clearExpenseImage(it.id);
+        }
+      } catch (e) {
+        // continue with others
+      }
+    }
+  } catch (e) {
+    console.error('Image cleanup error:', e.message);
+  }
+}
+
+// Run once at startup and then every 24 hours
+cleanupOldImages();
+setInterval(cleanupOldImages, ONE_DAY_MS);

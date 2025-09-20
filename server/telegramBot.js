@@ -20,9 +20,16 @@ class SpendBookBot {
     this.setupCommands();
     this.setupCallbackHandlers();
     this.setupPersistentMenu();
+  this._ensureUploads();
     // Prime and periodically refresh authorization cache
     this._refreshAuthCache();
     setInterval(() => this._refreshAuthCache(), this._authCacheTTL);
+  }
+  _ensureUploads() {
+    const fs = require('fs');
+    const path = require('path');
+    this.uploadsDir = path.join(__dirname, '..', 'uploads');
+    try { fs.mkdirSync(this.uploadsDir, { recursive: true }); } catch (_) {}
   }
 
   async _refreshAuthCache() {
@@ -120,7 +127,7 @@ Xarajatlar yuzasidan hisobot berish botiga xush kelibsiz!
         const totalDeposits = await Database.getTotalApprovedDeposits();
         const balance = totalDeposits - totalExpenses;
         const text = `📟 Balans\n\n💵 Depozitlar (tasdiqlangan): ${totalDeposits.toLocaleString()} so'm\n💸 Xarajatlar: ${totalExpenses.toLocaleString()} so'm\n\n🧮 Balans: ${balance.toLocaleString()} so'm`;
-        this.bot.sendMessage(chatId, text, { reply_markup: this.mainMenu() });
+        await this.bot.sendMessage(chatId, text, { reply_markup: this.mainMenu() });
       } catch (error) {
         console.error('Balance command error:', error);
         this.bot.sendMessage(chatId, 'Balansni olishda xatolik.');
@@ -163,7 +170,17 @@ Xarajatlar yuzasidan hisobot berish botiga xush kelibsiz!
           text += '\n• Depozitlar: yo\'q\n';
         }
 
-        this.bot.sendMessage(chatId, text, { reply_markup: this.mainMenu() });
+        await this.bot.sendMessage(chatId, text, { reply_markup: this.mainMenu() });
+
+        // For expenses with images, provide buttons to request the image
+        for (const e of recentExpenses) {
+          if (e.image_path) {
+            const amount = parseFloat(e.amount).toLocaleString();
+            const caption = `${e.category_name}: ${amount} so'm` + (e.description ? ` — ${e.description}` : '');
+            const keyboard = { inline_keyboard: [[{ text: '🖼 Rasm', callback_data: `exp_img_${e.id}` }]] };
+            try { await this.bot.sendMessage(chatId, caption, { reply_markup: keyboard }); } catch (_) {}
+          }
+        }
       } catch (error) {
         console.error('History command error:', error);
         this.bot.sendMessage(chatId, 'Tarixni olishda xatolik.');
@@ -297,15 +314,67 @@ Xarajatlar yuzasidan hisobot berish botiga xush kelibsiz!
           const isSkip = msg.text === '/skip' || msg.text === "⏭ Izohsiz o'tkazish";
           const description = isSkip ? null : msg.text;
 
+          // Request optional photo next
+          this.userStates.set(userId, {
+            action: 'waiting_expense_photo',
+            categoryId: userState.categoryId,
+            amount: userState.amount,
+            description
+          });
+          this.bot.sendMessage(chatId, "Tasdiqlovchi rasm MAJBURIY. Iltimos rasm yuboring (chek/screenshot/mahsulot).", { reply_markup: { remove_keyboard: true } });
+
+        } else if (userState.action === 'waiting_expense_photo') {
+          const hasPhoto = Array.isArray(msg.photo) && msg.photo.length > 0;
+          const hasImageDoc = msg.document && typeof msg.document === 'object' && String(msg.document.mime_type || '').startsWith('image/');
+          if (!hasPhoto && !hasImageDoc) {
+            this.bot.sendMessage(chatId, "❗ Rasm majburiy. Iltimos rasm yuboring (photo yoki image fayl). Boshqa xabarlar qabul qilinmaydi.");
+            return;
+          }
+
+          let relativePath = null;
+          if (hasPhoto || hasImageDoc) {
+            try {
+              const fileId = hasPhoto ? msg.photo[msg.photo.length - 1].file_id : msg.document.file_id;
+              const savedPath = await this.bot.downloadFile(fileId, this.uploadsDir);
+              const fs = require('fs');
+              const path = require('path');
+              const origExt = path.extname(savedPath) || (hasImageDoc ? `.${(msg.document.file_name || '').split('.').pop() || 'jpg'}` : '.jpg');
+              const stamp = new Date();
+              const ts = [
+                stamp.getFullYear(),
+                String(stamp.getMonth()+1).padStart(2,'0'),
+                String(stamp.getDate()).padStart(2,'0'),
+                '_',
+                String(stamp.getHours()).padStart(2,'0'),
+                String(stamp.getMinutes()).padStart(2,'0'),
+                String(stamp.getSeconds()).padStart(2,'0')
+              ].join('');
+              const newName = `${ts}_${Math.random().toString(36).slice(2,8)}${origExt}`;
+              const dest = path.join(this.uploadsDir, newName);
+              try { fs.renameSync(savedPath, dest); } catch (_) { /* ignore, may already be in place */ }
+              relativePath = `/uploads/${newName}`;
+            } catch (e) {
+              console.error('Photo save error:', e);
+            }
+          }
+
           await Database.createExpense(
             user.id,
             userState.categoryId,
             userState.amount,
-            description
+            userState.description,
+            null,
+            relativePath
           );
 
           this.userStates.delete(userId);
-          this.bot.sendMessage(chatId, `✅ Xarajat saqlandi!\n\n💰 Miqdor: ${userState.amount.toLocaleString()} so'm\n${description ? `📝 Izoh: ${description}` : ''}` , { reply_markup: this.mainMenu() });
+          const parts = [
+            `✅ Xarajat saqlandi!`,
+            `\n💰 Miqdor: ${userState.amount.toLocaleString()} so'm`,
+            userState.description ? `\n📝 Izoh: ${userState.description}` : '',
+            relativePath ? `\n🖼 Rasm saqlandi` : ''
+          ];
+          this.bot.sendMessage(chatId, parts.join(''), { reply_markup: this.mainMenu() });
 
         } else if (userState.action === 'waiting_deposit_amount') {
           const amount = parseFloat(msg.text);
@@ -404,6 +473,31 @@ Xarajatlar yuzasidan hisobot berish botiga xush kelibsiz!
           );
           // Send next-step prompt with persistent reply keyboard
           this.bot.sendMessage(chatId, `Xarajat miqdorini kiriting (so'm):`, { reply_markup: this.mainMenu() });
+        } else if (data.startsWith('exp_img_')) {
+          const id = parseInt(data.split('_')[2]);
+          const expense = await Database.getExpenseById(id);
+          const userRecord = await Database.getUserByTelegramId(userId);
+          if (!expense || !userRecord || expense.user_id !== userRecord.id) {
+            try { await this.bot.answerCallbackQuery(callbackQuery.id, { text: 'Topilmadi' }); } catch (_) {}
+            return;
+          }
+          if (!expense.image_path) {
+            try { await this.bot.answerCallbackQuery(callbackQuery.id, { text: 'Rasm mavjud emas' }); } catch (_) {}
+            return;
+          }
+          const path = require('path');
+          const fs = require('fs');
+          const abs = path.join(__dirname, '..', expense.image_path.replace(/^\/*/, ''));
+          try {
+            if (fs.existsSync(abs)) {
+              await this.bot.sendPhoto(chatId, abs);
+              try { await this.bot.answerCallbackQuery(callbackQuery.id, { text: 'Yuborildi' }); } catch (_) {}
+            } else {
+              try { await this.bot.answerCallbackQuery(callbackQuery.id, { text: 'Rasm topilmadi' }); } catch (_) {}
+            }
+          } catch (e) {
+            try { await this.bot.answerCallbackQuery(callbackQuery.id, { text: 'Xatolik' }); } catch (_) {}
+          }
         }
 
         this.bot.answerCallbackQuery(callbackQuery.id);

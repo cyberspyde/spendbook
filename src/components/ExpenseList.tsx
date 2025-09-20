@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, User, Tag, DollarSign } from 'lucide-react';
+import { User, DollarSign } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 
 interface Expense {
@@ -13,6 +13,7 @@ interface Expense {
   username: string;
   category_name: string;
   category_color: string;
+  image_path?: string | null;
 }
 
 export const ExpenseList: React.FC = () => {
@@ -140,6 +141,19 @@ export const ExpenseList: React.FC = () => {
               {expense.description && (
                 <div className="mt-2 text-sm text-gray-700 bg-white rounded p-2 border-l-2 border-gray-200">
                   {expense.description}
+                </div>
+              )}
+
+              {expense.image_path && (
+                <div className="mt-3">
+                  <a href={expense.image_path} target="_blank" rel="noreferrer">
+                    <img
+                      src={expense.image_path}
+                      alt="Xarajat rasmi"
+                      className="rounded border max-h-40 object-cover"
+                      loading="lazy"
+                    />
+                  </a>
                 </div>
               )}
             </div>
